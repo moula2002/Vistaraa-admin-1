@@ -36,9 +36,9 @@ const ProductManagement = () => {
     return () => clearTimeout(timer);
   }, [searchTerm]);
 
-  useEffect(() => {
-    fetchProducts();
-  }, [debouncedSearch, filterCategory]);
+useEffect(() => {
+  fetchProducts(false);
+}, [filterCategory]);
 
   const fetchStats = async () => {
     try {
@@ -86,55 +86,52 @@ const ProductManagement = () => {
     }
   };
 
-  const fetchProducts = async (isLoadMore = false) => {
-    try {
-      if (isLoadMore) setLoadingMore(true);
-      else {
-        setLoading(true);
-        setProducts([]);
-        setLastVisible(null);
-      }
-
-      const productsRef = collection(db, "products");
-      let q;
-      
-      let constraints = [orderBy("name")];
-
-      if (filterCategory) {
-        constraints.push(where("category", "==", filterCategory));
-      }
-
-      if (debouncedSearch) {
-        // Since we can only do 'starts with' in Firestore and it's case-sensitive,
-        // we'll try a basic approach or just filter the whole list if it were small.
-        // For now, let's stick to name ordering and we'll apply client-side search on what's fetched.
-        // In a real production app, we'd use Algolia or a case-insensitive field.
-      }
-
-      q = query(productsRef, ...constraints, limit(50));
-
-      if (isLoadMore && lastVisible) {
-        q = query(productsRef, ...constraints, startAfter(lastVisible), limit(50));
-      }
-
-      const snapshot = await getDocs(q);
-      const newProducts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      
-      if (isLoadMore) {
-        setProducts(prev => [...prev, ...newProducts]);
-      } else {
-        setProducts(newProducts);
-      }
-      
-      setLastVisible(snapshot.docs[snapshot.docs.length - 1]);
-      setHasMore(snapshot.docs.length === 50);
-    } catch (error) {
-      console.error("Error fetching products:", error);
-    } finally {
-      setLoading(false);
-      setLoadingMore(false);
+const fetchProducts = async (isLoadMore = false) => {
+  try {
+    if (isLoadMore) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+      setLastVisible(null);
     }
-  };
+
+    const productsRef = collection(db, "products");
+
+    let constraints = [orderBy("name")];
+
+    if (filterCategory) {
+      constraints.push(where("category", "==", filterCategory));
+    }
+
+    let q = query(productsRef, ...constraints, limit(50));
+
+    if (isLoadMore && lastVisible) {
+      q = query(productsRef, ...constraints, startAfter(lastVisible), limit(50));
+    }
+
+    const snapshot = await getDocs(q);
+
+    const newProducts = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+
+    if (isLoadMore) {
+      setProducts(prev => [...prev, ...newProducts]);
+    } else {
+      setProducts(newProducts);
+    }
+
+    setLastVisible(snapshot.docs[snapshot.docs.length - 1]);
+    setHasMore(snapshot.docs.length === 50);
+
+  } catch (error) {
+    console.error("Error fetching products:", error);
+  } finally {
+    setLoading(false);
+    setLoadingMore(false);
+  }
+};
 
   const fetchAll = async () => {
     try {
@@ -147,7 +144,7 @@ const ProductManagement = () => {
       setCategories(categoriesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       setSubCategories(subCategoriesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       
-      await fetchStats();
+   
       await fetchProducts();
     } catch (error) {
       console.error("Error fetching data:", error);
@@ -251,7 +248,7 @@ const ProductManagement = () => {
             {currentView === 'list' && (
               <>
                 <button
-                  onClick={fetchAll}
+                 onClick={() => fetchProducts()}
                   className="flex-1 md:flex-none flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-gray-200 text-gray-700 rounded-xl hover:bg-gray-50 font-bold text-sm transition-all shadow-sm"
                 >
                   <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
