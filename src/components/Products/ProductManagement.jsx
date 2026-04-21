@@ -27,6 +27,7 @@ const ProductManagement = () => {
 
   useEffect(() => {
     fetchAll();
+    // fetchStats() is now manual/on-demand to save your Firebase quota
   }, []);
 
   useEffect(() => {
@@ -38,12 +39,12 @@ const ProductManagement = () => {
 
   useEffect(() => {
     fetchProducts();
-  }, [debouncedSearch, filterCategory]);
+  }, [filterCategory]); // Optimized: Only refetch from DB when category changes, search is handled client-side
 
   const fetchStats = async () => {
     try {
       const coll = collection(db, "products");
-      
+
       // 1. Get the total count as accurately as possible
       const totalSnap = await getCountFromServer(coll);
       let totalCount = totalSnap.data().count;
@@ -82,7 +83,11 @@ const ProductManagement = () => {
 
       setStats(newStats);
     } catch (error) {
-      console.error("Critical error in fetchStats:", error);
+      if (error.code === "resource-exhausted" || error.message?.includes("quota")) {
+        console.warn("⚠️ Firestore Quota Exceeded for today. Stats might be inaccurate.");
+      } else {
+        console.error("Critical error in fetchStats:", error);
+      }
     }
   };
 
@@ -96,40 +101,93 @@ const ProductManagement = () => {
       }
 
       const productsRef = collection(db, "products");
-      let q;
-      
-      let constraints = [orderBy("name")];
 
+      // IMPORTANT: Firestore requires composite indexes for multiple fields (like category + orderBy name).
+      // To ensure results show up even without custom indexes, we'll only orderBy when no filters are active.
+      let constraints = [];
+      if (!filterCategory && !debouncedSearch.trim()) {
+        constraints.push(orderBy("name"));
+      }      // 1. Category Filter (Hybrid ID/Name matching)
       if (filterCategory) {
-        constraints.push(where("category", "==", filterCategory));
+        const cat = categories.find(c => c.id === filterCategory);
+        const searchValues = [filterCategory];
+
+        if (cat?.name) {
+          const name = cat.name.trim();
+          searchValues.push(name);
+          searchValues.push(name.toLowerCase());
+          searchValues.push(name.toUpperCase());
+
+          // Handle Title Case (e.g. "House Accessories")
+          const titleCase = name.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+          if (!searchValues.includes(titleCase)) searchValues.push(titleCase);
+        }
+
+        // Deduplicate and filter out empty strings
+        const uniqueValues = Array.from(new Set(searchValues)).filter(Boolean);
+        constraints.push(where("category", "in", uniqueValues));
       }
 
-      if (debouncedSearch) {
-        // Since we can only do 'starts with' in Firestore and it's case-sensitive,
-        // we'll try a basic approach or just filter the whole list if it were small.
-        // For now, let's stick to name ordering and we'll apply client-side search on what's fetched.
-        // In a real production app, we'd use Algolia or a case-insensitive field.
+      // 2. Search Filter
+      if (debouncedSearch.trim()) {
+        const term = debouncedSearch.trim().toLowerCase();
+        constraints.push(where("searchKeywords", "array-contains", term));
       }
 
-      q = query(productsRef, ...constraints, limit(50));
-
+      // If we have a filter, we must use a limit but usually we can't orderBy without index
+      let q = query(productsRef, ...constraints, limit(100));
       if (isLoadMore && lastVisible) {
-        q = query(productsRef, ...constraints, startAfter(lastVisible), limit(50));
+        q = query(productsRef, ...constraints, startAfter(lastVisible), limit(100));
       }
 
-      const snapshot = await getDocs(q);
+      let snapshot = await getDocs(q);
+
+      // BACKUP 1: Try with "Category" (Capital C)
+      if (snapshot.empty && filterCategory && !isLoadMore) {
+        const cat = categories.find(c => c.id === filterCategory);
+        const name = cat?.name?.trim();
+        const searchValues = [filterCategory];
+        if (name) {
+          searchValues.push(name, name.toLowerCase(), name.toUpperCase());
+        }
+        snapshot = await getDocs(query(productsRef, where("Category", "in", searchValues), limit(100)));
+      }
+
+      // BACKUP 2: Try checking field "subcategory"
+      if (snapshot.empty && filterCategory && !isLoadMore) {
+        const cat = categories.find(c => c.id === filterCategory);
+        const searchValues = [filterCategory];
+        if (cat?.name) {
+          const name = cat.name.trim();
+          searchValues.push(name, name.toLowerCase(), name.toUpperCase());
+          const titleCase = name.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+          if (!searchValues.includes(titleCase)) searchValues.push(titleCase);
+        }
+        const uniqueValues = Array.from(new Set(searchValues)).filter(Boolean);
+        snapshot = await getDocs(query(productsRef, where("subcategory", "in", uniqueValues), limit(100)));
+      }
+
+      // BACKUP 3: Try checking field "categoryId"
+      if (snapshot.empty && filterCategory && !isLoadMore) {
+        snapshot = await getDocs(query(productsRef, where("categoryId", "==", filterCategory), limit(100)));
+      }
+
       const newProducts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      
+
       if (isLoadMore) {
         setProducts(prev => [...prev, ...newProducts]);
       } else {
         setProducts(newProducts);
       }
-      
+
       setLastVisible(snapshot.docs[snapshot.docs.length - 1]);
-      setHasMore(snapshot.docs.length === 50);
+      setHasMore(snapshot.docs.length === 100);
     } catch (error) {
-      console.error("Error fetching products:", error);
+      if (error.code === "resource-exhausted" || error.message?.includes("quota")) {
+        console.warn("⚠️ Firestore Quota Exceeded. Unable to load products.");
+      } else {
+        console.error("Error fetching products:", error);
+      }
     } finally {
       setLoading(false);
       setLoadingMore(false);
@@ -146,8 +204,8 @@ const ProductManagement = () => {
 
       setCategories(categoriesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       setSubCategories(subCategoriesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-      
-      await fetchStats();
+
+      // Removed fetchStats() from here; it now only runs on mount to save quota
       await fetchProducts();
     } catch (error) {
       console.error("Error fetching data:", error);
@@ -189,16 +247,37 @@ const ProductManagement = () => {
 
   const filteredProducts = useMemo(() => {
     const term = debouncedSearch.trim().toLowerCase();
+    const filterCatId = filterCategory;
+    const filterCatName = categories.find(c => c.id === filterCatId)?.name?.toLowerCase();
+
     return products.filter((p) => {
-      const nameMatch = String(p.name || "").toLowerCase().includes(term);
-      const categoryMatch = !filterCategory || p.category === filterCategory;
-      return nameMatch && categoryMatch;
+      // 1. Search Match (Name, SKU, Brand, Keywords)
+      const name = String(p.name || "").toLowerCase();
+      const sku = String(p.sku || p.basesku || p.baseSku || "").toLowerCase();
+      const brand = String(p.brand || "").toLowerCase();
+      const keywords = Array.isArray(p.searchKeywords) ? p.searchKeywords.join(" ").toLowerCase() : "";
+
+      const searchMatch = !term ||
+        name.includes(term) ||
+        sku.includes(term) ||
+        brand.includes(term) ||
+        keywords.includes(term);
+
+      // 2. Category Match (ID or Name)
+      if (!filterCatId) return searchMatch;
+
+      const prodCat = String(p.category || p.categoryId || p.Category || "").toLowerCase();
+      const prodCatName = String(p.categoryName || "").toLowerCase();
+
+      const categoryMatch =
+        prodCat === filterCatId.toLowerCase() ||
+        (filterCatName && (prodCat === filterCatName || prodCatName === filterCatName));
+
+      return searchMatch && categoryMatch;
     });
-  }, [products, debouncedSearch, filterCategory]);
+  }, [products, debouncedSearch, filterCategory, categories]);
 
   const getCategoryName = (idOrName) => {
-    // Try to find by any value passed, or look into the product object if we were to pass that.
-    // Since we pass product.category, let's keep it simple but resilient.
     if (!idOrName) return "N/A";
     const cat = categories.find(c => c.id === idOrName || c.name === idOrName || c.id === String(idOrName));
     return cat ? cat.name : idOrName;
@@ -250,6 +329,14 @@ const ProductManagement = () => {
           <div className="flex items-center gap-2 w-full md:w-auto">
             {currentView === 'list' && (
               <>
+                <button
+                  onClick={fetchStats}
+                  className="flex-1 md:flex-none flex items-center justify-center gap-2 px-4 py-2.5 bg-amber-50 border border-amber-200 text-amber-700 rounded-xl hover:bg-amber-100 font-bold text-sm transition-all shadow-sm"
+                  title="Recalculate inventory totals (Uses Firestore Quota)"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  Stats
+                </button>
                 <button
                   onClick={fetchAll}
                   className="flex-1 md:flex-none flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-gray-200 text-gray-700 rounded-xl hover:bg-gray-50 font-bold text-sm transition-all shadow-sm"

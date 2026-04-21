@@ -112,14 +112,21 @@ const ProductDetails = ({ product, categories, subCategories, onEdit, onClose })
                 <div className="space-y-3">
                   <div className="flex justify-between items-center py-2 border-b border-gray-200">
                     <span className="text-gray-600">Regular Price</span>
-                    <span className="text-gray-800 font-semibold text-lg">₹{product.price}</span>
+                    <span className="text-gray-800 font-semibold text-lg">₹{product.price || 0}</span>
                   </div>
-                  {(product.offerprice || product.offerPrice || product.salePrice) && (product.offerprice || product.offerPrice || product.salePrice) < product.price && (
-                    <div className="flex justify-between items-center py-2 border-b border-gray-200">
-                      <span className="text-gray-600">Sale Price</span>
-                      <span className="text-green-600 font-semibold text-lg">₹{product.offerprice || product.offerPrice || product.salePrice}</span>
-                    </div>
-                  )}
+                  {(() => {
+                    const regPrice = parseFloat(product.price || 0);
+                    const offPrice = parseFloat(product.offerPrice || product.offerprice || product.salePrice || 0);
+                    if (offPrice > 0 && offPrice < regPrice) {
+                      return (
+                        <div className="flex justify-between items-center py-2 border-b border-gray-200">
+                          <span className="text-gray-600">Sale Price</span>
+                          <span className="text-green-600 font-semibold text-lg">₹{offPrice}</span>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
                   <div className="flex justify-between items-center py-2 border-b border-gray-200">
                     <span className="text-gray-600">Stock Quantity</span>
                     <span className={`px-3 py-1 rounded-full text-sm font-medium ${stockStatus.bg} ${stockStatus.color}`}>

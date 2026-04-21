@@ -30,7 +30,7 @@ const Sidebar = ({ isOpen, onClose }) => {
     { path: '/category', icon: Layers, label: 'Category' },
     { path: '/sub-category', icon: Layers, label: 'Sub Category' },
     // { path: '/sub-under-category', icon: Layers3, label: 'Sub Under Category' },
-    { path: '/brands', icon: Tag, label: 'Brands', },
+    // { path: '/brands', icon: Tag, label: 'Brands', },
     { path: '/sellers', icon: Users, label: 'Sellers',  },
     { path: '/coupons', icon: Ticket, label: 'Coupons' },
     { path: '/posters', icon: Image, label: 'Posters' },

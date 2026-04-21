@@ -31,12 +31,35 @@ const ProductList = ({
 
   const visibleProducts = React.useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
-    if (!term) return products;
-    return products.filter(p =>
-      String(p.name || "").toLowerCase().includes(term) ||
-      String(p.basesku || "").toLowerCase().includes(term)
-    );
-  }, [products, searchTerm]);
+    const filterCatId = filterCategory;
+    const filterCatName = (categories || []).find(c => c.id === filterCatId)?.name?.toLowerCase();
+
+    return products.filter(p => {
+      // 1. Search Match (including brand, multi-sku fields, and keywords)
+      const name = String(p.name || "").toLowerCase();
+      const sku = String(p.sku || p.basesku || p.baseSku || "").toLowerCase();
+      const brand = String(p.brand || "").toLowerCase();
+      const keywords = Array.isArray(p.searchKeywords) ? p.searchKeywords.join(" ").toLowerCase() : "";
+      
+      const searchMatch = !term || 
+        name.includes(term) || 
+        sku.includes(term) || 
+        brand.includes(term) || 
+        keywords.includes(term);
+      
+      // 2. Category Match (Consistency with parent)
+      if (!filterCatId) return searchMatch;
+
+      const prodCat = String(p.category || p.categoryId || p.Category || "").toLowerCase();
+      const prodCatName = String(p.categoryName || "").toLowerCase();
+      
+      const categoryMatch = 
+        prodCat === filterCatId.toLowerCase() || 
+        (filterCatName && (prodCat === filterCatName || prodCatName === filterCatName));
+
+      return searchMatch && categoryMatch;
+    });
+  }, [products, searchTerm, filterCategory, categories]);
 
   const stats = React.useMemo(() => {
     return propStats || { totalProducts: 0, outOfStock: 0, lowStock: 0, inStock: 0 };
@@ -233,13 +256,25 @@ const ProductList = ({
                         <div className="flex flex-col">
                           <div className="text-gray-900 font-black flex items-center gap-0.5">
                             <IndianRupee size={12} />
-                            {(product.offerprice || product.price)?.toLocaleString()}
+                            {(() => {
+                              const regPrice = parseFloat(product.price || 0);
+                              const offPrice = parseFloat(product.offerPrice || product.offerprice || 0);
+                              // Display the lower of the two as primary if offer exists and is valid
+                              return (offPrice > 0 && offPrice < regPrice) ? offPrice.toLocaleString() : regPrice.toLocaleString();
+                            })()}
                           </div>
-                          {product.offerprice < product.price && (
-                            <div className="text-gray-400 text-[10px] font-bold line-through ml-1 italic opacity-60">
-                              ₹{product.price?.toLocaleString()}
-                            </div>
-                          )}
+                          {(() => {
+                            const regPrice = parseFloat(product.price || 0);
+                            const offPrice = parseFloat(product.offerPrice || product.offerprice || 0);
+                            if (offPrice > 0 && offPrice < regPrice) {
+                              return (
+                                <div className="text-gray-400 text-[10px] font-bold line-through ml-1 italic opacity-60">
+                                  ₹{regPrice.toLocaleString()}
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
                       </td>
 
@@ -340,11 +375,20 @@ const ProductList = ({
                       <div className="flex items-center gap-2">
                         <span className="text-indigo-600 font-black text-base flex items-center">
                           <IndianRupee size={14} strokeWidth={3} />
-                          {(product.offerprice || product.price)?.toLocaleString()}
+                          {(() => {
+                            const regPrice = parseFloat(product.price || 0);
+                            const offPrice = parseFloat(product.offerPrice || product.offerprice || regPrice);
+                            return (offPrice > 0 && offPrice < regPrice) ? offPrice.toLocaleString() : regPrice.toLocaleString();
+                          })()}
                         </span>
-                        {product.offerprice < product.price && (
-                          <span className="text-gray-400 text-xs font-bold line-through">₹{product.price?.toLocaleString()}</span>
-                        )}
+                        {(() => {
+                          const regPrice = parseFloat(product.price || 0);
+                          const offPrice = parseFloat(product.offerPrice || product.offerprice || regPrice);
+                          if (offPrice > 0 && offPrice < regPrice) {
+                            return <span className="text-gray-400 text-xs font-bold line-through">₹{regPrice.toLocaleString()}</span>
+                          }
+                          return null;
+                        })()}
                       </div>
                     </div>
                   </div>
