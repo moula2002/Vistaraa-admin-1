@@ -130,14 +130,11 @@ const Orders = () => {
     });
   };
 
-const API_URL =
-  window.location.hostname === "localhost"
-    ? "http://localhost:3000"
-    : "https://vistaraa-admin-1.vercel.app/";
+const API_URL = window.location.origin;
 
   const sendOrderEmail = async (data) => {
   try {
-    await fetch(`${API_URL}/api/sendEmail`, {
+    await fetch(`${API_URL}/api/sendEmail`.replace(/([^:]\/)\/+/g, "$1"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -150,69 +147,65 @@ const API_URL =
 };
 
 useEffect(() => {
-  const unsubscribeList = [];
-  const initializedUsers = new Set(); // ✅ moved outside
+  const unsubscribeList = new Map(); // Use a map to track listeners by userId
 
-  const listenOrders = async () => {
-    const usersSnap = await getDocs(collection(db, "users"));
+  const setupUserListener = (userId, userData) => {
+    if (unsubscribeList.has(userId)) return;
 
-    usersSnap.forEach((userDoc) => {
-      const userId = userDoc.id;
-      const userData = userDoc.data();
+    let isInitialLoad = true;
+    const unsubscribe = onSnapshot(
+      collection(db, "users", userId, "orders"),
+      (snapshot) => {
+        if (isInitialLoad) {
+          isInitialLoad = false;
+          return;
+        }
 
-      const unsubscribe = onSnapshot(
-        collection(db, "users", userId, "orders"),
-        (snapshot) => {
+        snapshot.docChanges().forEach(async (change) => {
+          const orderData = change.doc.data();
+          const customerEmail = userData.email || orderData.customerEmail || "";
+          const customerName = userData.userName || userData.displayName || orderData.customerName || "Customer";
+          
+          if (!customerEmail) return;
 
-          if (!initializedUsers.has(userId)) {
-            initializedUsers.add(userId);
-            return;
+          const orderId = orderData.orderId || `ORD-${change.doc.id.slice(0, 8).toUpperCase()}`;
+
+          if (change.type === "added") {
+            await sendOrderEmail({
+              userEmail: customerEmail,
+              userName: customerName,
+              orderId: orderId,
+              status: "pending", 
+              orderItems: orderData.products || [],
+            });
           }
 
-          snapshot.docChanges().forEach(async (change) => {
-            const orderData = change.doc.data();
-
-            const order = {
-              id: change.doc.id,
-              customerId: userId,
-              customerName: userData.userName || "Customer",
-              customerEmail: userData.email || "",
-              ...orderData,
-            };
-
-            if (change.type === "added") {
-              await sendOrderEmail({
-                userEmail: order.customerEmail,
-                userName: order.customerName,
-                orderId: order.orderId,
-                status: "processing",
-                orderItems: order.products || [],
-              });
-            }
-
-            if (change.type === "modified") {
-              await sendOrderEmail({
-                userEmail: order.customerEmail,
-                userName: order.customerName,
-                orderId: order.orderId,
-                status: order.orderStatus,
-                orderItems: order.products || [],
-              });
-            }
-          });
-
-          // ❌ REMOVE THIS
-          // loadOrders();
-        }
-      );
-
-      unsubscribeList.push(unsubscribe);
-    });
+          if (change.type === "modified") {
+            await sendOrderEmail({
+              userEmail: customerEmail,
+              userName: customerName,
+              orderId: orderId,
+              status: orderData.orderStatus || "pending",
+              orderItems: orderData.products || [],
+            });
+          }
+        });
+      }
+    );
+    unsubscribeList.set(userId, unsubscribe);
   };
 
-  listenOrders();
+  // 1. Listen for ALL users (including new ones)
+  const unsubscribeUsers = onSnapshot(collection(db, "users"), (snapshot) => {
+    snapshot.docs.forEach((userDoc) => {
+      setupUserListener(userDoc.id, userDoc.data());
+    });
+  });
 
-  return () => unsubscribeList.forEach((u) => u());
+  return () => {
+    unsubscribeUsers();
+    unsubscribeList.forEach((unsub) => unsub());
+  };
 }, []);
   const getStatusColor = (status) => {
     switch (status?.toLowerCase()) {
