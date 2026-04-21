@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { FiPackage, FiTag, FiImage, FiLayers, FiUploadCloud, FiTrash2, FiPlus, FiCheckCircle, FiAlertCircle, FiArrowLeft, FiChevronRight, FiInfo } from "react-icons/fi";
 import { auth, db, storage } from "../../../firebase";
-import { collection, addDoc, getDocs, query, where } from "firebase/firestore";
+import { collection, addDoc, getDocs, query, where, doc, updateDoc } from "firebase/firestore";
 
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -9,7 +9,14 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 
 
-export default function AddProduct() {
+export default function AddProduct({ 
+  mode = "add", 
+  product = null, 
+  onSave, 
+  onCancel,
+  categories: propCategories = [],
+  subCategories: propSubCategories = []
+}) {
   const navigate = useNavigate();
   const tabs = ["basic", "pricing", "category", "media", "variants"];
   const [tab, setTab] = useState("basic");
@@ -55,13 +62,64 @@ export default function AddProduct() {
 
   // ✅ AUTO SELLER ID
   useEffect(() => {
-    const user = auth.currentUser;
-    if (user) {
-      setSellerId(user.uid);
-    } else {
-      navigate("/login");
+    // If we have a user in Firebase Auth, use it
+    if (auth.currentUser) {
+      setSellerId(auth.currentUser.uid);
+      return;
     }
+
+    // Otherwise, listen for changes
+    const unsubscribe = auth.onAuthStateChanged((user) => {
+      if (user) {
+        setSellerId(user.uid);
+      } else {
+        // Fallback to localStorage if Firebase Auth hasn't initialized yet
+        const localUID = localStorage.getItem("adminUID");
+        if (localUID) {
+          setSellerId(localUID);
+        } else {
+          // Only redirect if we're sure there's no auth session at all
+          // and we're not already on the login page (to avoid loops)
+          if (window.location.pathname !== "/login") {
+            navigate("/login");
+          }
+        }
+      }
+    });
+    return () => unsubscribe();
   }, [navigate]);
+
+  // 🔥 EDIT MODE: POPULATE FORM
+  useEffect(() => {
+    if (mode === "edit" && product) {
+      setForm({
+        name: product.name || "",
+        description: product.description || "",
+        category: product.category || "",
+        subcategory: product.subcategory || "",
+        subunder: product.subunder || "",
+        brand: product.brand || "",
+        sku: product.sku || "",
+        price: product.price || 0,
+        salePrice: product.salePrice || 0,
+        stock: product.stock || 0,
+        hsn: product.hsn || "",
+        active: product.active ?? true,
+        featured: product.featured ?? false,
+      });
+
+      if (product.images && Array.isArray(product.images)) {
+        // For editing, we might keep the existing image URLs
+        // We'll store them as objects with a property telling us they are existing
+        setPreview(product.images.map(img => typeof img === 'string' ? img : img.url));
+        // We don't put them in 'images' state because 'images' state is for new uploads
+      }
+
+      if (product.variants && Array.isArray(product.variants)) {
+        setVariants(product.variants);
+      }
+    }
+  }, [mode, product]);
 
   // 🔥 1. FETCH MAIN CATEGORIES
   useEffect(() => {
@@ -224,8 +282,10 @@ const handleImages = (e) => {
   };
   const removeVariant = (i) => setVariants(variants.filter((_, index) => index !== i));
 const handleSubmit = async () => {
-  const user = auth.currentUser;
-  if (!user) {
+  const currentSellerId = sellerId || auth.currentUser?.uid || localStorage.getItem("adminUID");
+  const currentSellerEmail = auth.currentUser?.email || localStorage.getItem("adminEmail");
+  
+  if (!currentSellerId) {
     setError("Please login first");
     navigate("/login");
     return;
@@ -243,7 +303,12 @@ const handleSubmit = async () => {
   try {
     let imageUrls = [];
 
-    // Upload images using your S3 function
+    // If editing, start with existing images
+    if (mode === "edit" && product?.images) {
+      imageUrls = [...product.images];
+    }
+
+    // Upload new images using your S3 function
     if (images.length > 0) {
       for (let [index, file] of images.entries()) {
         try {
@@ -254,7 +319,7 @@ const handleSubmit = async () => {
             type: file.type,
             size: file.size,
             uploadedAt: new Date(),
-            isPrimary: index === 0,
+            isPrimary: imageUrls.length === 0,
           });
         } catch (uploadError) {
           console.error(`Error uploading ${file.name}:`, uploadError);
@@ -264,8 +329,8 @@ const handleSubmit = async () => {
     }
 
     // Category names
-    const categoryName = categories.find(c => c.id === form.category)?.name || "";
-    const subcategoryName = subcategories.find(s => s.id === form.subcategory)?.name || "";
+    const categoryName = (propCategories.length > 0 ? propCategories : categories).find(c => c.id === form.category)?.name || "";
+    const subcategoryName = (subcategories.length > 0 ? subcategories : subcategories).find(s => s.id === form.subcategory)?.name || "";
     const subunderName = subunder.find(s => s.id === form.subunder)?.name || "";
 
     // SKU
@@ -281,7 +346,7 @@ const handleSubmit = async () => {
       categoryName,
       subcategoryName,
       subunderName,
-      hsn:form.hsn,
+      hsn: form.hsn || "",
       brand: form.brand.trim() || null,
       sku: finalSku,
       price: parseFloat(form.price),
@@ -289,37 +354,48 @@ const handleSubmit = async () => {
       stock: parseInt(form.stock),
       active: form.active,
       featured: form.featured,
-      sellerId: user.uid,
-      sellerEmail: user.email,
+      sellerId: currentSellerId,
+      sellerEmail: currentSellerEmail || "",
       variants: variants.length > 0 ? variants : [],
       images: imageUrls,
-      createdAt: new Date(),
       updatedAt: new Date(),
-      status: "pending",
-      approved: false,
-      views: 0,
-      sales: 0,
-      rating: 0,
-      reviewsCount: 0,
       slug: form.name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-"),
       metaTitle: form.name.trim(),
       metaDescription: form.description.substring(0, 160).trim(),
-      lowStockThreshold: 10,
-      trackInventory: true,
-      tags: [],
-      attributes: [],
-      specifications: {},
     };
 
-    // Add product to Firestore
-    await addDoc(collection(db, "products"), productData);
+    if (mode === "edit" && product?.id) {
+      // Update existing product
+      await updateDoc(doc(db, "products", product.id), productData);
+      alert("✅ Product Updated Successfully!");
+    } else {
+      // Add new product
+      productData.createdAt = new Date();
+      productData.status = "pending";
+      productData.approved = false;
+      productData.views = 0;
+      productData.sales = 0;
+      productData.rating = 0;
+      productData.reviewsCount = 0;
+      productData.lowStockThreshold = 10;
+      productData.trackInventory = true;
+      productData.tags = [];
+      productData.attributes = [];
+      productData.specifications = {};
+      
+      await addDoc(collection(db, "products"), productData);
+      alert("✅ Product Added Successfully! Awaiting admin approval.");
+    }
 
-    alert("✅ Product Added Successfully! Awaiting admin approval.");
-    navigate("/products");
+    if (onSave) {
+      onSave();
+    } else {
+      navigate("/products");
+    }
 
   } catch (err) {
-    console.error("Error adding product:", err);
-    setError(err.message || "Failed to add product. Please try again.");
+    console.error(`Error ${mode === 'edit' ? 'updating' : 'adding'} product:`, err);
+    setError(err.message || `Failed to ${mode === 'edit' ? 'update' : 'add'} product. Please try again.`);
   } finally {
     setLoading(false);
   }
@@ -369,13 +445,13 @@ const handleSubmit = async () => {
         className="max-w-5xl mx-auto"
       >
         {/* Desktop Header */}
-        <header className="hidden md:block mb-4 md:mb-8">
+<header className="hidden md:block mb-4 md:mb-8">
           <h1 className="text-2xl sm:text-3xl md:text-4xl font-extrabold tracking-tight text-slate-900">
-            Add New Product
+            {mode === 'edit' ? 'Refine Product' : 'Add New Product'}
           </h1>
           <div className="flex items-center gap-2 mt-1 md:mt-2 flex-wrap">
             <span className="bg-blue-100 text-blue-700 text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">
-              Seller Mode
+              {mode === 'edit' ? 'Edit Mode' : 'Seller Mode'}
             </span>
             <p className="text-xs md:text-sm text-slate-500 truncate max-w-[200px] sm:max-w-full">
               ID: {sellerId || "Authenticating..."}
@@ -848,7 +924,7 @@ const handleSubmit = async () => {
         <footer className="flex flex-col-reverse sm:flex-row justify-between items-center gap-6 mt-10 pb-20 md:pb-10 pt-8 border-t border-slate-200">
           <div className="flex items-center gap-4">
             <button
-              onClick={() => navigate("/products")}
+              onClick={onCancel || (() => navigate("/products"))}
               className="px-6 py-3 text-slate-500 font-bold hover:text-slate-900 transition-colors text-sm"
               disabled={loading}
             >
@@ -905,7 +981,7 @@ const handleSubmit = async () => {
                 ) : (
                   <>
                     <FiUploadCloud className="text-xl" /> 
-                    Public & Publish
+                    {mode === 'edit' ? 'Update Product' : 'Public & Publish'}
                   </>
                 )}
               </motion.button>
