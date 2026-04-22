@@ -10,7 +10,18 @@ import {
   MoreVertical, Activity, Target, Clock, Eye, MessageSquare,
   RefreshCw, TrendingDown
 } from "lucide-react";
-import { collection, getDocs, query, orderBy, limit } from "firebase/firestore";
+import { 
+  collection, 
+  getDocs, 
+  query, 
+  orderBy, 
+  limit, 
+  getCountFromServer,
+  collectionGroup,
+  where,
+  getDoc,
+  doc
+} from "firebase/firestore";
 import { db } from "../../firebase";
 
 export default function Dashboard() {
@@ -21,6 +32,9 @@ export default function Dashboard() {
     totalUsers: 0,
     totalOrders: 0,
     totalProducts: 0,
+    outOfStock: 0,
+    lowStock: 0,
+    inStock: 0,
     revenueGrowth: 0,
     userGrowth: 0,
     orderGrowth: 0,
@@ -37,46 +51,88 @@ export default function Dashboard() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      // 1. Fetch Users
-      const usersSnap = await getDocs(collection(db, "users"));
-      const totalUsers = usersSnap.size;
+      // 1. Efficiently Count Users & Products
+      const coll = collection(db, "products");
+      const [usersCountSnap, productsCountSnap, outSnap, lowSnap, inSnap] = await Promise.all([
+        getCountFromServer(collection(db, "users")),
+        getCountFromServer(coll),
+        getCountFromServer(query(coll, where("stock", "==", 0))),
+        getCountFromServer(query(coll, where("stock", ">", 0), where("stock", "<=", 10))),
+        getCountFromServer(query(coll, where("stock", ">", 10)))
+      ]);
+      
+      const totalUsers = usersCountSnap.data().count;
+      const totalProducts = productsCountSnap.data().count;
+      let outOfStock = outSnap.data().count;
+      let lowStock = lowSnap.data().count;
+      let inStock = inSnap.data().count;
 
-      // 2. Fetch Products
-      const productsSnap = await getDocs(collection(db, "products"));
-      const totalProducts = productsSnap.size;
-
-      // 3. Fetch All Orders (Iterating through users to get subcollections)
-      let allOrders = [];
-      let totalRevenue = 0;
-
-      for (const userDoc of usersSnap.docs) {
-        const userId = userDoc.id;
-        const ordersSnap = await getDocs(collection(db, "users", userId, "orders"));
-        
-        ordersSnap.forEach((orderDoc) => {
-          const orderData = orderDoc.data();
-          const amount = Number(orderData.totalAmount || 0);
-          totalRevenue += amount;
-          allOrders.push({
-            id: orderDoc.id,
-            userName: userDoc.data().userName || "Unknown",
-            amount: amount,
-            status: orderData.orderStatus,
-            createdAt: orderData.createdAt,
-            ...orderData
-          });
-        });
+      // Type Resilience: If sum is 0 but total > 0, fallback to showing all as inStock
+      if (totalProducts > 0 && outOfStock + lowStock + inStock === 0) {
+        inStock = totalProducts;
       }
 
-      // Sort orders by date
-      allOrders.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+      // 2. Optimized Order Fetching
+      const ordersSnap = await getDocs(query(
+        collectionGroup(db, "orders"),
+        orderBy("createdAt", "desc"),
+        limit(200) // Increased limit to ensure we get user orders even if sellers have many orders
+      ));
+      
+      // 3. Robust Name Fetching
+      const customerIds = [...new Set(ordersSnap.docs
+        .map(doc => {
+          const data = doc.data();
+          if (doc.ref.path.startsWith("users/")) return doc.ref.parent.parent?.id;
+          return data.customerId || data.userId || data.uid || data.cid;
+        })
+        .filter(id => !!id)
+      )];
 
-      // 4. Update Stats State
+      const userMap = new Map();
+      await Promise.all(customerIds.map(async (id) => {
+        try {
+          const uSnap = await getDoc(doc(db, "users", id));
+          if (uSnap.exists()) {
+          const uData = uSnap.data();
+          userMap.set(id, uData.name || uData.userName || uData.displayName || uData.email);
+          }
+        } catch (e) {
+          console.error("Dashboard user fetch error:", e);
+        }
+      }));
+      
+      const allOrders = [];
+      let totalRevenue = 0;
+
+      ordersSnap.forEach((orderDoc) => {
+        // Only include orders belonging to users, ignore seller subcollections
+        if (orderDoc.ref.path.includes("/sellers/")) return;
+        
+        const orderData = orderDoc.data();
+        const cid = orderDoc.ref.path.startsWith("users/") 
+          ? orderDoc.ref.parent.parent?.id 
+          : (orderData.customerId || orderData.userId || orderData.uid || orderData.cid);
+        const amount = Number(orderData.totalAmount || 0);
+        totalRevenue += amount;
+        allOrders.push({
+          id: orderDoc.id,
+          userName: orderData.customerName || orderData.userName || userMap.get(cid) || "Customer",
+          amount: amount,
+          status: orderData.orderStatus,
+          createdAt: orderData.createdAt,
+          ...orderData
+        });
+      });
+
       setStats({
         totalRevenue,
         totalUsers,
         totalOrders: allOrders.length,
         totalProducts,
+        outOfStock,
+        lowStock,
+        inStock: inStock || (totalProducts > 0 && outOfStock + lowStock === 0 ? totalProducts : inStock),
         // Mocking growth for now as history tracking requires complex queries
         revenueGrowth: 12.5,
         userGrowth: 342,
@@ -216,14 +272,30 @@ export default function Dashboard() {
           className="bg-gradient-to-br from-rose-500 to-pink-600 text-white rounded-3xl p-6 shadow-xl shadow-rose-100 relative overflow-hidden"
         >
           <div className="relative z-10">
-            <p className="text-rose-100 text-sm font-medium uppercase tracking-wider">Products</p>
-            <p className="text-4xl font-black mt-2">{stats.totalProducts.toLocaleString()}</p>
-            <div className="flex items-center gap-2 mt-6 bg-white/10 w-fit px-3 py-1 rounded-full backdrop-blur-md">
-              <Package className="w-4 h-4 text-white" />
-              <span className="text-xs font-bold">+{stats.productGrowth} new arrivals</span>
+            <div className="flex justify-between items-start">
+              <div>
+                <p className="text-rose-100 text-[10px] font-black uppercase tracking-wider">Inventory Health</p>
+                <p className="text-4xl font-black mt-1">{stats.totalProducts.toLocaleString()}</p>
+                <p className="text-[11px] font-bold text-rose-100/80 mt-1">Total Products</p>
+              </div>
+              <Package className="w-10 h-10 text-white/20" />
+            </div>
+            
+            <div className="grid grid-cols-3 gap-2 mt-6">
+              <div className="bg-white/10 rounded-xl p-2 text-center">
+                <div className="text-xs font-black">{stats.inStock}</div>
+                <div className="text-[8px] uppercase font-bold opacity-70">Active</div>
+              </div>
+              <div className="bg-white/10 rounded-xl p-2 text-center">
+                <div className="text-xs font-black text-amber-200">{stats.lowStock}</div>
+                <div className="text-[8px] uppercase font-bold opacity-70">Low</div>
+              </div>
+              <div className="bg-white/10 rounded-xl p-2 text-center">
+                <div className="text-xs font-black text-rose-200">{stats.outOfStock}</div>
+                <div className="text-[8px] uppercase font-bold opacity-70">Out</div>
+              </div>
             </div>
           </div>
-          <Package className="absolute -bottom-4 -right-4 w-32 h-32 text-white/10" />
         </motion.div>
       </div>
 

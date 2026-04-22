@@ -17,8 +17,8 @@ import Posters from "./pages/Posters";
 import PythonAutomation from "./pages/PythonAutomation";
 import JsonBulkUpload from "./pages/JsonUploadPage";
 import AdminLogin from "./pages/Login";
-
 import Profile from "./pages/Profile";
+import Returns from "./pages/Returns";
 // ✅ Protected Route
 const ProtectedRoute = ({ children }) => {
   const isAuth = localStorage.getItem("adminAuth") === "true";
@@ -64,6 +64,7 @@ const App = () => {
                       <Route path="/posters" element={<Posters />} />
                       <Route path="/python-automation" element={<PythonAutomation />} />
                       <Route path="/bulk-upload" element={<JsonBulkUpload />} />
+                      <Route path="/returns" element={<Returns />} />
                       <Route path="/profile" element={<Profile/>} />
                     </Routes>
                   </main>

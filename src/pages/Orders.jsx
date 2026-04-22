@@ -7,9 +7,14 @@ import {
   deleteDoc,
   addDoc,
   serverTimestamp,
+  onSnapshot,
+  query,
+  orderBy,
+  limit,
+  collectionGroup,
+  getDoc
 } from "firebase/firestore";
 import { db } from "../../firebase";
-import { onSnapshot } from "firebase/firestore";
 import {
   User,
   Edit,
@@ -34,40 +39,87 @@ import {
   ExternalLink,
   MoreVertical,
   X,
-  ArrowUpRight
+  ArrowUpRight,
+  Box,
+  Zap,
+  Info
 } from "lucide-react";
+
+const API_BASE_URL = "https://vistaraa-server.vercel.app/api";
+const AUTH_TOKEN = "006eb537ffea3dafe0e3a16233c449a1e20510e8f3404b1a456f53cf6ca7f371";
 
 /* ======================================================
    🔥 INLINE ORDER SERVICE
 ====================================================== */
 
 const orderService = {
-  getAll: async () => {
-    const usersSnap = await getDocs(collection(db, "users"));
-    const orders = [];
+  enrichOrdersWithUserProfiles: async (docs) => {
+    // 1. Robust ID Extraction
+    const customerIds = [...new Set(docs
+      .map(doc => {
+        const data = doc.data();
+        if (doc.ref.path.startsWith("users/")) return doc.ref.parent.parent?.id;
+        return data.customerId || data.userId || data.uid || data.cid;
+      })
+      .filter(id => !!id)
+    )];
 
-    for (const userDoc of usersSnap.docs) {
-      const userId = userDoc.id;
-      const userData = userDoc.data();
+    // 2. Parallel Profile Fetching
+    const userMap = new Map();
+    await Promise.all(customerIds.map(async (id) => {
+      try {
+        const uSnap = await getDoc(doc(db, "users", id));
+        if (uSnap.exists()) {
+          const uData = uSnap.data();
+          userMap.set(id, {
+            name: uData.name || uData.userName || uData.displayName,
+            email: uData.email,
+            phone: uData.contactNo || uData.phoneNumber || uData.phone
+          });
+        }
+      } catch (e) {
+        console.error(`Error fetching data for user ${id}:`, e);
+      }
+    }));
 
-      const ordersSnap = await getDocs(
-        collection(db, "users", userId, "orders")
-      );
-
-      ordersSnap.forEach((orderDoc) => {
-        const orderData = orderDoc.data();
-        orders.push({
-          id: orderDoc.id,
-          orderId: orderData.orderId || `ORD-${orderDoc.id.slice(0, 8).toUpperCase()}`,
-          customerId: userId,
-          customerName: userData.userName || userData.displayName || "Unknown Customer" ,
-          customerEmail: userData.email || "",
-          customerPhone: userData.phone || "",
-          ...orderData,
-        });
+    // 3. Mapping and Enrichment
+    return docs
+      .filter(doc => !doc.ref.path.includes("/sellers/")) // Exclude any seller-related orders
+      .map(doc => {
+        const data = doc.data();
+        const cid = doc.ref.path.startsWith("users/") 
+          ? (doc.ref.parent.parent?.id || "Unknown")
+          : (data.customerId || data.userId || data.uid || data.cid || "Unknown");
+        
+        const uProfile = userMap.get(cid) || {};
+        
+        // Prioritize: 1. Order Name, 2. Profile Name, 3. Profile Email, 4. Order Email, 5. Default
+        const email = data.customerEmail || data.userEmail || uProfile.email || "";
+        const name = data.customerName || data.userName || uProfile.name || (email && email.split('@')[0]) || "Customer";
+        
+        return {
+          id: doc.id,
+          orderId: data.orderId || `ORD-${doc.id.slice(0, 8).toUpperCase()}`,
+          customerId: cid,
+          customerName: name,
+          customerEmail: email,
+          customerPhone: data.customerPhone || data.phoneNumber || uProfile.phone || "",
+          ...data
+        };
       });
-    }
-    return orders.sort((a, b) => b.createdAt?.seconds - a.createdAt?.seconds);
+  },
+
+  getAll: async () => {
+    // 1. Optimized Fetching
+    const q = query(
+      collectionGroup(db, "orders"),
+      orderBy("createdAt", "desc"),
+      limit(1000)
+    );
+    const snap = await getDocs(q);
+    
+    // 2. Use helper to enrich data
+    return await orderService.enrichOrdersWithUserProfiles(snap.docs);
   },
 
   updateStatus: async (orderId, status, customerId) => {
@@ -93,16 +145,31 @@ const Orders = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [dateFilter, setDateFilter] = useState("all");
+  const [error, setError] = useState(null);
+  const [syncingId, setSyncingId] = useState(null);
 
 
-  
+
   const loadOrders = async () => {
     setLoading(true);
+    setError(null);
     try {
       const data = await orderService.getAll();
       setOrders(data);
     } catch (error) {
       console.error("Error loading orders:", error);
+      setError(error.message);
+
+      // Fallback: If sorted query fails (index issue), try fetching without sort just to show data
+      if (error.message.includes("index") || error.code === "failed-precondition") {
+        try {
+          const fallbackSnap = await getDocs(query(collectionGroup(db, "orders"), limit(200)));
+          const enrichedData = await orderService.enrichOrdersWithUserProfiles(fallbackSnap.docs);
+          setOrders(enrichedData);
+        } catch (fError) {
+          console.error("Fallback failed:", fError);
+        }
+      }
     }
     setLoading(false);
   };
@@ -130,87 +197,181 @@ const Orders = () => {
     });
   };
 
-const API_URL = window.location.origin;
+  const API_URL = window.location.origin;
 
   const sendOrderEmail = async (data) => {
-  try {
-    await fetch(`${API_URL}/api/sendEmail`.replace(/([^:]\/)\/+/g, "$1"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(data),
-    });
-  } catch (err) {
-    console.error("Email failed", err);
-  }
-};
+    try {
+      await fetch(`${API_URL}/api/sendEmail`.replace(/([^:]\/)\/+/g, "$1"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(data),
+      });
+    } catch (err) {
+      console.error("Email failed", err);
+    }
+  };
 
-useEffect(() => {
-  const unsubscribeList = new Map(); // Use a map to track listeners by userId
-
-  const setupUserListener = (userId, userData) => {
-    if (unsubscribeList.has(userId)) return;
+  useEffect(() => {
+    // 1. One listener for ALL orders in the system (Highly Optimized)
+    const q = query(
+      collectionGroup(db, "orders"),
+      orderBy("createdAt", "desc"),
+      limit(20) // Only listen to newest orders for notifications
+    );
 
     let isInitialLoad = true;
-    const unsubscribe = onSnapshot(
-      collection(db, "users", userId, "orders"),
-      (snapshot) => {
-        if (isInitialLoad) {
-          isInitialLoad = false;
-          return;
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (isInitialLoad) {
+        isInitialLoad = false;
+        return;
+      }
+
+      snapshot.docChanges().forEach(async (change) => {
+        // STRICT FILTER: ONLY CUSTOMER ORDERS
+        if (!change.doc.ref.path.startsWith("users/")) return;
+
+        const orderData = change.doc.data();
+        let customerName = orderData.customerName || orderData.userName;
+
+        // Fetch name from user doc if missing in order
+        if (!customerName) {
+          try {
+            const userId = change.doc.ref.parent.parent?.id;
+            if (userId) {
+              const uSnap = await getDoc(doc(db, "users", userId));
+              if (uSnap.exists()) {
+                const uData = uSnap.data();
+                customerName = uData.name || uData.userName || uData.displayName;
+              }
+            }
+          } catch (e) {
+            console.error("Error fetching name for listener:", e);
+          }
         }
 
-        snapshot.docChanges().forEach(async (change) => {
-          const orderData = change.doc.data();
-          const customerEmail = userData.email || orderData.customerEmail || "";
-          const customerName = userData.userName || userData.displayName || orderData.customerName || "Customer";
-          
-          if (!customerEmail) return;
+        customerName = customerName || "Customer";
+        const customerEmail = orderData.customerEmail || orderData.userEmail || "";
 
-          const orderId = orderData.orderId || `ORD-${change.doc.id.slice(0, 8).toUpperCase()}`;
+        if (!customerEmail) return;
 
-          if (change.type === "added") {
-            await sendOrderEmail({
-              userEmail: customerEmail,
-              userName: customerName,
-              orderId: orderId,
-              status: "pending", 
-              orderItems: orderData.products || [],
-            });
-          }
+        const orderId = orderData.orderId || `ORD-${change.doc.id.slice(0, 8).toUpperCase()}`;
 
-          if (change.type === "modified") {
-            await sendOrderEmail({
-              userEmail: customerEmail,
-              userName: customerName,
-              orderId: orderId,
-              status: orderData.orderStatus || "pending",
-              orderItems: orderData.products || [],
-            });
-          }
-        });
-      }
-    );
-    unsubscribeList.set(userId, unsubscribe);
-  };
+        if (change.type === "added") {
+          await sendOrderEmail({
+            userEmail: customerEmail,
+            userName: customerName,
+            orderId: orderId,
+            status: "pending",
+            orderItems: orderData.products || [],
+          });
+        }
 
-  // 1. Listen for ALL users (including new ones)
-  const unsubscribeUsers = onSnapshot(collection(db, "users"), (snapshot) => {
-    snapshot.docs.forEach((userDoc) => {
-      setupUserListener(userDoc.id, userDoc.data());
+        if (change.type === "modified") {
+          await sendOrderEmail({
+            userEmail: customerEmail,
+            userName: customerName,
+            orderId: orderId,
+            status: orderData.orderStatus || "pending",
+            orderItems: orderData.products || [],
+          });
+        }
+      });
     });
-  });
 
-  return () => {
-    unsubscribeUsers();
-    unsubscribeList.forEach((unsub) => unsub());
+    return () => unsubscribe();
+  }, []);
+  const handleStatusChange = async (order, newStatus) => {
+    try {
+      setSyncingId(order.id);
+
+      // 1. Update Firestore Status first
+      await orderService.updateStatus(order.id, newStatus, order.customerId);
+
+      // 2. Shiprocket Integration Logic
+      if (newStatus === "ready to ship" && !order.shiprocketOrderId) {
+        console.log("Preparing Shiprocket Adhoc Order...");
+
+        // Map Firestore order to Shiprocket Adhoc format
+        const shiprocketData = {
+          order_id: order.id, // Using Firestore ID as mapping
+          order_date: order.createdAt?.seconds
+            ? new Date(order.createdAt.seconds * 1000).toISOString().split('T')[0]
+            : new Date().toISOString().split('T')[0],
+          pickup_location: "Primary",
+          billing_customer_name: order.customerName?.split(' ')[0] || "Customer",
+          billing_last_name: order.customerName?.split(' ').slice(1).join(' ') || "User",
+          billing_address: order.address || order.shippingAddress || "No Address",
+          billing_city: order.city || "Unknown",
+          billing_pincode: order.pinCode || order.pincode || "000000",
+          billing_state: order.state || "Unknown",
+          billing_country: "India",
+          billing_email: order.customerEmail || "noreply@vistaraa.com",
+          billing_phone: order.phoneNumber || order.phoneNumber || "0000000000",
+          shipping_is_billing: true,
+          order_items: (order.products || []).map(p => ({
+            name: p.name,
+            sku: p.basesku || p.sku || p.id,
+            units: p.quantity,
+            selling_price: p.offerPrice || p.price
+          })),
+          payment_method: order.paymentMethod === "COD" ? "COD" : "Prepaid",
+          sub_total: order.totalAmount,
+          length: 10, weight: 0.5, height: 10, width: 10,
+          user_id: order.customerId // Vital for backend to find user/order
+        };
+
+        const res = await fetch(`${API_BASE_URL}/create-order`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${AUTH_TOKEN}`
+          },
+          body: JSON.stringify(shiprocketData)
+        });
+
+        const result = await res.json();
+        if (res.ok) {
+          alert(`Shiprocket Sync Success! Order ID: ${result.order_id || result.data?.order_id}`);
+        } else {
+          console.error("Shiprocket Create Failed:", result);
+          alert(`Shiprocket Sync Failed: ${result.details?.message || "Check fields"}`);
+        }
+      }
+      else if (newStatus === "cancelled" && order.shiprocketOrderId) {
+        console.log("Cancelling Shiprocket Order...");
+        const res = await fetch(`${API_BASE_URL}/cancel-order`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${AUTH_TOKEN}`
+          },
+          body: JSON.stringify({ shiprocketOrderId: order.shiprocketOrderId })
+        });
+
+        const result = await res.json();
+        if (res.ok) {
+          alert("Order cancelled in Shiprocket successfully.");
+        } else {
+          console.error("Shiprocket Cancel Failed:", result);
+        }
+      }
+
+      await loadOrders(); // Refresh to see updated info
+    } catch (error) {
+      console.error("Status Change Integration Error:", error);
+      alert("Status changed in DB, but failed to sync with Shiprocket.");
+    } finally {
+      setSyncingId(null);
+    }
   };
-}, []);
+
   const getStatusColor = (status) => {
     switch (status?.toLowerCase()) {
       case 'pending': return { bg: 'bg-yellow-100', text: 'text-yellow-800', icon: Clock };
       case 'processing': return { bg: 'bg-blue-100', text: 'text-blue-800', icon: Package };
+      case 'ready to ship': return { bg: 'bg-indigo-100', text: 'text-indigo-800', icon: Box };
       case 'shipped': return { bg: 'bg-purple-100', text: 'text-purple-800', icon: Truck };
       case 'delivered': return { bg: 'bg-green-100', text: 'text-green-800', icon: CheckCircle };
       case 'cancelled': return { bg: 'bg-red-100', text: 'text-red-800', icon: XCircle };
@@ -281,66 +442,66 @@ useEffect(() => {
     );
   }
   const downloadOrdersCSV = () => {
-  if (!filteredOrders.length) {
-    alert("No orders to export");
-    return;
-  }
+    if (!filteredOrders.length) {
+      alert("No orders to export");
+      return;
+    }
 
-  const headers = [
-    "Order ID",
-    "Customer Name",
-    "Email",
-    "Phone",
-    "Order Status",
-    "Payment Method",
-    "Total Amount",
-    "Order Date",
-    "Address",
-    "Products"
-  ];
-
-  const rows = filteredOrders.map(order => {
-    const products = order.products
-      ?.map(p => `${p.name} (x${p.quantity})`)
-      .join(" | ") || "";
-
-    const orderDate = order.createdAt?.seconds
-      ? new Date(order.createdAt.seconds * 1000).toLocaleString()
-      : "";
-
-    return [
-      order.orderId,
-      order.customerName,
-      order.customerEmail,
-      order.phoneNumber || "",
-      order.orderStatus,
-      order.paymentMethod || "",
-      order.totalAmount,
-      orderDate,
-      order.address || "",
-      products
+    const headers = [
+      "Order ID",
+      "Customer Name",
+      "Email",
+      "Phone",
+      "Order Status",
+      "Payment Method",
+      "Total Amount",
+      "Order Date",
+      "Address",
+      "Products"
     ];
-  });
 
-  const csvContent =
-    [headers, ...rows]
-      .map(row =>
-        row
-          .map(value => `"${String(value).replace(/"/g, '""')}"`)
-          .join(",")
-      )
-      .join("\n");
+    const rows = filteredOrders.map(order => {
+      const products = order.products
+        ?.map(p => `${p.name} (x${p.quantity})`)
+        .join(" | ") || "";
 
-  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
+      const orderDate = order.createdAt?.seconds
+        ? new Date(order.createdAt.seconds * 1000).toLocaleString()
+        : "";
 
-  const link = document.createElement("a");
-  link.href = url;
-  link.setAttribute("download", `orders_${Date.now()}.csv`);
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-};
+      return [
+        order.orderId,
+        order.customerName,
+        order.customerEmail,
+        order.phoneNumber || "",
+        order.orderStatus,
+        order.paymentMethod || "",
+        order.totalAmount,
+        orderDate,
+        order.address || "",
+        products
+      ];
+    });
+
+    const csvContent =
+      [headers, ...rows]
+        .map(row =>
+          row
+            .map(value => `"${String(value).replace(/"/g, '""')}"`)
+            .join(",")
+        )
+        .join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `orders_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
 
   return (
@@ -351,22 +512,24 @@ useEffect(() => {
           <h1 className="text-3xl font-bold text-gray-900">Order Management</h1>
           <p className="text-gray-600 mt-1">Track and manage all customer orders</p>
         </div>
-        
+
         <div className="flex items-center gap-4">
           <div className="bg-gradient-to-r from-blue-50 to-indigo-50 px-4 py-3 rounded-xl border border-blue-100">
             <div className="text-sm text-gray-600">Total Revenue</div>
             <div className="text-2xl font-bold text-gray-900">₹{stats.revenue.toLocaleString()}</div>
           </div>
-          
+
           <button
             onClick={loadOrders}
             className="flex items-center gap-2 px-5 py-3 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 transition-colors shadow-sm"
           >
-            <RefreshCw size={18} />
+            <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
             Refresh
           </button>
         </div>
       </div>
+
+      {/* ERROR ALERT REMOVED AS PER USER REQUEST */}
 
       {/* STATS CARDS */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -447,12 +610,13 @@ useEffect(() => {
                 <option value="all">All Status</option>
                 <option value="pending">Pending</option>
                 <option value="processing">Processing</option>
+                <option value="ready to ship">Ready to ship</option>
                 <option value="shipped">Shipped</option>
                 <option value="delivered">Delivered</option>
                 <option value="cancelled">Cancelled</option>
               </select>
             </div>
-            
+
             <div className="relative">
               <Calendar className="absolute left-3 top-3 text-gray-400" size={18} />
               <select
@@ -468,20 +632,20 @@ useEffect(() => {
             </div>
           </div>
         </div>
-        
+
         <div className="flex justify-between items-center mt-4">
           <div className="text-sm text-gray-600">
             Showing <span className="font-semibold">{filteredOrders.length}</span> of{" "}
             <span className="font-semibold">{orders.length}</span> orders
           </div>
-          
-         <button
-  onClick={downloadOrdersCSV}
-  className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 transition-colors shadow-sm"
->
-  <Download size={18} />
-  Export Orders
-</button>
+
+          <button
+            onClick={downloadOrdersCSV}
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 transition-colors shadow-sm"
+          >
+            <Download size={18} />
+            Export Orders
+          </button>
 
         </div>
       </div>
@@ -531,14 +695,16 @@ useEffect(() => {
                           </div>
                         </div>
                       </td>
-                      <td className="px-6 py-4">
+                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
                           <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-500 rounded-lg flex items-center justify-center text-white font-bold">
-                            {order.customerName?.charAt(0).toUpperCase()}
+                            {(order.customerName || order.customerEmail || "C").charAt(0).toUpperCase()}
                           </div>
                           <div>
                             <div className="font-medium text-gray-900">{order.customerName}</div>
-                            <div className="text-sm text-gray-500">{order.customerEmail}</div>
+                            {order.customerEmail && order.customerEmail !== order.customerName && (
+                              <div className="text-sm text-gray-500">{order.customerEmail}</div>
+                            )}
                           </div>
                         </div>
                       </td>
@@ -551,20 +717,30 @@ useEffect(() => {
                             {getStatusIcon(order.orderStatus)}
                             {order.orderStatus}
                           </span>
-                          <select
-                            value={order.orderStatus}
-                            onChange={(e) => {
-                              orderService.updateStatus(order.id, e.target.value, order.customerId);
-                             
-                            }}
-                            className="text-sm border border-gray-300 rounded-lg p-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                          >
-                            <option value="pending">Pending</option>
-                            <option value="processing">Processing</option>
-                            <option value="shipped">Shipped</option>
-                            <option value="delivered">Delivered</option>
-                            <option value="cancelled">Cancelled</option>
-                          </select>
+                          <div className="relative">
+                            <select
+                              value={order.orderStatus}
+                              disabled={syncingId === order.id}
+                              onChange={(e) => handleStatusChange(order, e.target.value)}
+                              className={`text-sm border border-gray-300 rounded-lg p-1 pr-6 focus:outline-none focus:ring-1 focus:ring-blue-500 appearance-none bg-white ${syncingId === order.id ? 'opacity-50' : ''}`}
+                            >
+                              <option value="pending">Pending</option>
+                              <option value="processing">Processing</option>
+                              <option value="ready to ship">Ready to ship</option>
+                              <option value="shipped">Shipped</option>
+                              <option value="delivered">Delivered</option>
+                              <option value="cancelled">Cancelled</option>
+                            </select>
+                            {syncingId === order.id && (
+                              <RefreshCw className="absolute right-1.5 top-1.5 w-3 h-3 text-blue-500 animate-spin" />
+                            )}
+                          </div>
+                          {order.shiprocketOrderId && (
+                            <div className="flex items-center gap-1.5 mt-1.5 px-2 py-1 bg-blue-50 border border-blue-100 rounded-md">
+                              <Zap size={10} className="text-blue-600 fill-blue-600" />
+                              <span className="text-[10px] font-black text-blue-700 uppercase tracking-tight">Sync: #{order.shiprocketOrderId}</span>
+                            </div>
+                          )}
                         </div>
                       </td>
                       <td className="px-6 py-4">
@@ -603,7 +779,7 @@ useEffect(() => {
             </tbody>
           </table>
         </div>
-        
+
         {/* FOOTER */}
         {filteredOrders.length > 0 && (
           <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-between items-center">
@@ -643,7 +819,7 @@ useEffect(() => {
                   {order.orderStatus}
                 </span>
               </div>
-              
+
               <div className="flex items-center gap-3 mb-4">
                 <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-500 rounded-xl flex items-center justify-center text-white font-bold">
                   {order.customerName?.charAt(0).toUpperCase()}
@@ -653,7 +829,7 @@ useEffect(() => {
                   <div className="text-sm text-gray-500">{order.customerEmail}</div>
                 </div>
               </div>
-              
+
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div>
                   <div className="text-sm text-gray-600">Amount</div>
@@ -664,7 +840,7 @@ useEffect(() => {
                   <div className="font-medium">{order.products?.length || 0}</div>
                 </div>
               </div>
-              
+
               <div className="flex gap-2">
                 <button
                   onClick={() => setViewOrder(order)}
@@ -689,7 +865,7 @@ useEffect(() => {
             </div>
           );
         })}
-        
+
         {filteredOrders.length === 0 && (
           <div className="text-center py-12 bg-white border border-gray-200 rounded-xl">
             <Package className="mx-auto text-gray-300 mb-3" size={48} />
@@ -716,7 +892,7 @@ useEffect(() => {
                   <h2 className="text-2xl font-bold text-gray-900">Order Details</h2>
                   <p className="text-gray-600">{viewOrder.orderId}</p>
                 </div>
-                <button 
+                <button
                   onClick={() => setViewOrder(null)}
                   className="p-2 hover:bg-gray-100 rounded-xl"
                 >
@@ -740,13 +916,14 @@ useEffect(() => {
                       </div>
                       <div>
                         <div className="font-medium">{viewOrder.customerName}</div>
-                        <div className="text-sm text-gray-600">{viewOrder.customerEmail}</div>
+                        <div className="text-sm text-gray-600 truncate max-w-[150px]">{viewOrder.customerEmail}</div>
+                        <div className="text-[10px] font-mono text-gray-400 mt-1 uppercase tracking-tighter">CID: {viewOrder.customerId}</div>
                       </div>
                     </div>
-                    {viewOrder.phoneNumber && (
+                    {(viewOrder.customerPhone || viewOrder.phoneNumber) && (
                       <div className="flex items-center gap-2 text-gray-700">
                         <Phone size={16} className="text-gray-400" />
-                        <span>{viewOrder.phoneNumber}</span>
+                        <span>{viewOrder.customerPhone || viewOrder.phoneNumber}</span>
                       </div>
                     )}
                   </div>
@@ -843,9 +1020,9 @@ useEffect(() => {
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-3">
                               {item.images?.[0] && (
-                                <img 
-                                  src={item.images[0]} 
-                                  alt={item.name} 
+                                <img
+                                  src={item.images[0]}
+                                  alt={item.name}
                                   className="w-12 h-12 rounded-lg object-cover border border-gray-200"
                                 />
                               )}
@@ -877,7 +1054,7 @@ useEffect(() => {
                 >
                   Close
                 </button>
-              
+
               </div>
             </div>
           </div>

@@ -40,6 +40,7 @@ export default async function handler(req, res) {
     const subjectMap = {
       pending : "⏳ Order Confirmed",
       processing: "🛠️ Order Processing",
+      "ready to ship": "📦 Order Ready to Ship",
       shipped: "🚚 Order Shipped",
       delivered: "✅ Order Delivered",
       returned: "↩️ Order Returned",
@@ -52,6 +53,7 @@ export default async function handler(req, res) {
     const statusColor = {
       pending : "#fbbf24",
       processing: "#f59e0b",
+      "ready to ship": "#6366f1",
       shipped: "#3b82f6",
       delivered: "#10b981",
       cancelled: "#ef4444",

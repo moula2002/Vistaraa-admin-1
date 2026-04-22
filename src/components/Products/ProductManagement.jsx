@@ -23,6 +23,10 @@ const ProductManagement = () => {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [lastVisible, setLastVisible] = useState(null);
   const [hasMore, setHasMore] = useState(true);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize] = useState(50);
+  const [pageAnchors, setPageAnchors] = useState({ 1: null });
+  const [totalProducts, setTotalProducts] = useState(0);
   const [stats, setStats] = useState({ totalProducts: 0, outOfStock: 0, lowStock: 0, inStock: 0 });
 
   useEffect(() => {
@@ -38,28 +42,21 @@ const ProductManagement = () => {
   }, [searchTerm]);
 
   useEffect(() => {
-    fetchProducts();
-  }, [filterCategory]); // Optimized: Only refetch from DB when category changes, search is handled client-side
+    setCurrentPage(1);
+    setPageAnchors({ 1: null });
+    fetchProducts(1);
+  }, [filterCategory]); 
 
   const fetchStats = async () => {
     try {
       const coll = collection(db, "products");
-
-      // 1. Get the total count as accurately as possible
       const totalSnap = await getCountFromServer(coll);
-      let totalCount = totalSnap.data().count;
+      setTotalProducts(totalSnap.data().count);
+      
+      const newStats = { totalProducts: totalSnap.data().count, outOfStock: 0, lowStock: 0, inStock: 0 };
+      setTotalProducts(newStats.totalProducts);
 
-      // Log for debugging (visible if user opens inspector)
-      console.log("Stats Refresh - Total Products Found:", totalCount);
-
-      const newStats = {
-        totalProducts: totalCount,
-        outOfStock: 0,
-        lowStock: 0,
-        inStock: 0
-      };
-
-      // 2. Attempt filtered counts
+      // 2. Attempt filtered counts with error handling for missing indexes or types
       try {
         const [outSnap, lowSnap, inSnap] = await Promise.all([
           getCountFromServer(query(coll, where("stock", "==", 0))),
@@ -71,14 +68,15 @@ const ProductManagement = () => {
         newStats.lowStock = lowSnap.data().count;
         newStats.inStock = inSnap.data().count;
 
-        // Validation: If filtered sums are 0 but total > 0, docs might use strings or different fields
-        if (totalCount > 0 && newStats.outOfStock + newStats.lowStock + newStats.inStock === 0) {
-          console.warn("Stock-based counts are zero. Checking for type mismatches or missing fields.");
-          // Fallback: estimate inStock as the total count if we can't narrow it down
-          newStats.inStock = totalCount;
+        // Validation: If total > 0 but sum is 0, we likely have legacy string data or missing/different field names
+        if (newStats.totalProducts > 0 && (newStats.outOfStock + newStats.lowStock + newStats.inStock === 0)) {
+           console.warn("Stock queries returned zero but total is > 0. Using total as 'In Stock' fallback.");
+           newStats.inStock = newStats.totalProducts;
         }
       } catch (err) {
-        console.warn("Filtered stats query failed:", err);
+        console.warn("Detailed stats queries failed:", err.message);
+        // Fallback: Just show total as "In Stock" so the UI isn't empty
+        newStats.inStock = newStats.totalProducts;
       }
 
       setStats(newStats);
@@ -91,121 +89,73 @@ const ProductManagement = () => {
     }
   };
 
-  const fetchProducts = async (isLoadMore = false) => {
+  const fetchProducts = async (pageNumber = 1) => {
     try {
-      if (isLoadMore) setLoadingMore(true);
-      else {
-        setLoading(true);
-        setProducts([]);
-        setLastVisible(null);
-      }
-
+      setLoading(true);
       const productsRef = collection(db, "products");
-
-      // IMPORTANT: Firestore requires composite indexes for multiple fields (like category + orderBy name).
-      // To ensure results show up even without custom indexes, we'll only orderBy when no filters are active.
       let constraints = [];
-      if (!filterCategory && !debouncedSearch.trim()) {
+      
+      if (!filterCategory) {
         constraints.push(orderBy("name"));
-      }      // 1. Category Filter (Hybrid ID/Name matching)
-      if (filterCategory) {
-        const cat = categories.find(c => c.id === filterCategory);
-        const searchValues = [filterCategory];
-
-        if (cat?.name) {
-          const name = cat.name.trim();
-          searchValues.push(name);
-          searchValues.push(name.toLowerCase());
-          searchValues.push(name.toUpperCase());
-
-          // Handle Title Case (e.g. "House Accessories")
-          const titleCase = name.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
-          if (!searchValues.includes(titleCase)) searchValues.push(titleCase);
-        }
-
-        // Deduplicate and filter out empty strings
-        const uniqueValues = Array.from(new Set(searchValues)).filter(Boolean);
-        constraints.push(where("category", "in", uniqueValues));
-      }
-
-      // 2. Search Filter
-      if (debouncedSearch.trim()) {
-        const term = debouncedSearch.trim().toLowerCase();
-        constraints.push(where("searchKeywords", "array-contains", term));
-      }
-
-      // If we have a filter, we must use a limit but usually we can't orderBy without index
-      let q = query(productsRef, ...constraints, limit(100));
-      if (isLoadMore && lastVisible) {
-        q = query(productsRef, ...constraints, startAfter(lastVisible), limit(100));
-      }
-
-      let snapshot = await getDocs(q);
-
-      // BACKUP 1: Try with "Category" (Capital C)
-      if (snapshot.empty && filterCategory && !isLoadMore) {
-        const cat = categories.find(c => c.id === filterCategory);
-        const name = cat?.name?.trim();
-        const searchValues = [filterCategory];
-        if (name) {
-          searchValues.push(name, name.toLowerCase(), name.toUpperCase());
-        }
-        snapshot = await getDocs(query(productsRef, where("Category", "in", searchValues), limit(100)));
-      }
-
-      // BACKUP 2: Try checking field "subcategory"
-      if (snapshot.empty && filterCategory && !isLoadMore) {
-        const cat = categories.find(c => c.id === filterCategory);
-        const searchValues = [filterCategory];
-        if (cat?.name) {
-          const name = cat.name.trim();
-          searchValues.push(name, name.toLowerCase(), name.toUpperCase());
-          const titleCase = name.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
-          if (!searchValues.includes(titleCase)) searchValues.push(titleCase);
-        }
-        const uniqueValues = Array.from(new Set(searchValues)).filter(Boolean);
-        snapshot = await getDocs(query(productsRef, where("subcategory", "in", uniqueValues), limit(100)));
-      }
-
-      // BACKUP 3: Try checking field "categoryId"
-      if (snapshot.empty && filterCategory && !isLoadMore) {
-        snapshot = await getDocs(query(productsRef, where("categoryId", "==", filterCategory), limit(100)));
-      }
-
-      const newProducts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
-      if (isLoadMore) {
-        setProducts(prev => [...prev, ...newProducts]);
       } else {
-        setProducts(newProducts);
+        constraints.push(where("category", "==", filterCategory));
       }
 
-      setLastVisible(snapshot.docs[snapshot.docs.length - 1]);
-      setHasMore(snapshot.docs.length === 100);
+      // Pagination logic
+      const anchor = pageAnchors[pageNumber];
+      if (anchor) {
+        constraints.push(startAfter(anchor));
+      }
+      
+      constraints.push(limit(pageSize));
+
+      const q = query(productsRef, ...constraints);
+      const snapshot = await getDocs(q);
+      
+      const newProducts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setProducts(newProducts);
+      
+      // Update anchors for NEXT page
+      if (snapshot.docs.length === pageSize) {
+        setPageAnchors(prev => ({
+          ...prev,
+          [pageNumber + 1]: snapshot.docs[snapshot.docs.length - 1]
+        }));
+      }
+
+      setHasMore(snapshot.docs.length === pageSize);
+      setCurrentPage(pageNumber);
+      
     } catch (error) {
       if (error.code === "resource-exhausted" || error.message?.includes("quota")) {
-        console.warn("⚠️ Firestore Quota Exceeded. Unable to load products.");
+        console.warn("⚠️ Firestore Quota Exceeded.");
       } else {
         console.error("Error fetching products:", error);
       }
     } finally {
       setLoading(false);
-      setLoadingMore(false);
     }
   };
 
   const fetchAll = async () => {
     try {
       setLoading(true);
-      const [categoriesSnap, subCategoriesSnap] = await Promise.all([
+      const [categoriesSnap, subCategoriesSnap, productsCountSnap] = await Promise.all([
         getDocs(collection(db, "categories")),
-        getDocs(collection(db, "subcategories"))
+        getDocs(collection(db, "subcategories")),
+        getCountFromServer(collection(db, "products"))
       ]);
 
-      setCategories(categoriesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      const catData = categoriesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setCategories(catData);
       setSubCategories(subCategoriesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      
+      const totalCount = productsCountSnap.data().count;
+      setTotalProducts(totalCount);
+      setStats(prev => ({ ...prev, totalProducts: totalCount }));
 
-      // Removed fetchStats() from here; it now only runs on mount to save quota
+      // Automatically fetch stock stats during initial sync
+      await fetchStats();
       await fetchProducts();
     } catch (error) {
       console.error("Error fetching data:", error);
@@ -403,7 +353,10 @@ const ProductManagement = () => {
                 loading={loading}
                 loadingMore={loadingMore}
                 hasMore={hasMore}
-                onLoadMore={() => fetchProducts(true)}
+                currentPage={currentPage}
+                pageSize={pageSize}
+                totalProducts={totalProducts}
+                onPageChange={fetchProducts}
                 stats={stats}
                 searchTerm={searchTerm}
                 filterCategory={filterCategory}

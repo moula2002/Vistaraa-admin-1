@@ -14,7 +14,7 @@ import {
   RefreshCw
 } from "lucide-react";
 
-import { collection, getDocs, doc, updateDoc } from "firebase/firestore";
+import { collection, getDocs, doc, updateDoc, query, limit, startAfter, where } from "firebase/firestore";
 import { db } from "../../firebase";
 
 const Customers = () => {
@@ -24,6 +24,9 @@ const Customers = () => {
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [lastVisible, setLastVisible] = useState(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [pageSize] = useState(20);
 
   // =====================================================
   // FETCH USERS
@@ -31,14 +34,29 @@ const Customers = () => {
 
   useEffect(() => {
     fetchCustomers();
-  }, []);
+  }, [statusFilter]);
 
-  const fetchCustomers = async () => {
+  const fetchCustomers = async (isLoadMore = false) => {
     try {
       setLoading(true);
       const usersRef = collection(db, "users");
-      const snap = await getDocs(usersRef);
+      
+      let q;
+      if (statusFilter !== 'all') {
+        q = query(usersRef, where("status", "==", statusFilter), limit(pageSize));
+      } else {
+        q = query(usersRef, limit(pageSize));
+      }
 
+      if (isLoadMore && lastVisible) {
+        if (statusFilter !== 'all') {
+          q = query(usersRef, where("status", "==", statusFilter), startAfter(lastVisible), limit(pageSize));
+        } else {
+          q = query(usersRef, startAfter(lastVisible), limit(pageSize));
+        }
+      }
+
+      const snap = await getDocs(q);
       const data = snap.docs.map((docSnap) => {
         const u = docSnap.data();
         return {
@@ -52,7 +70,14 @@ const Customers = () => {
         };
       });
 
-      setCustomers(data);
+      if (isLoadMore) {
+        setCustomers(prev => [...prev, ...data]);
+      } else {
+        setCustomers(data);
+      }
+      
+      setLastVisible(snap.docs[snap.docs.length - 1]);
+      setHasMore(snap.docs.length === pageSize);
     } catch (err) {
       console.error("Error fetching users:", err);
     } finally {
@@ -368,12 +393,12 @@ const Customers = () => {
               <span className="font-semibold">{customers.length}</span> customers
             </div>
             <div className="flex items-center gap-2">
-              <button className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-100">
-                Previous
-              </button>
-              <span className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm">1</span>
-              <button className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-100">
-                Next
+              <button 
+                onClick={() => fetchCustomers(true)}
+                disabled={!hasMore || loading}
+                className="px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-md hover:bg-blue-700 disabled:bg-gray-300 disabled:shadow-none transition-all"
+              >
+                {loading ? "Loading..." : hasMore ? "Load More Customers" : "End of List"}
               </button>
             </div>
           </div>

@@ -13,7 +13,6 @@ const ProductList = ({
   loading,
   loadingMore,
   hasMore,
-  onLoadMore,
   stats: propStats,
   searchTerm,
   filterCategory,
@@ -25,7 +24,11 @@ const ProductList = ({
   onDelete,
   onRefresh,
   getCategoryName,
-  getSubCategoryName
+  getSubCategoryName,
+  currentPage,
+  pageSize,
+  totalProducts,
+  onPageChange
 }) => {
   const [showFilters, setShowFilters] = React.useState(false);
 
@@ -40,21 +43,21 @@ const ProductList = ({
       const sku = String(p.sku || p.basesku || p.baseSku || "").toLowerCase();
       const brand = String(p.brand || "").toLowerCase();
       const keywords = Array.isArray(p.searchKeywords) ? p.searchKeywords.join(" ").toLowerCase() : "";
-      
-      const searchMatch = !term || 
-        name.includes(term) || 
-        sku.includes(term) || 
-        brand.includes(term) || 
+
+      const searchMatch = !term ||
+        name.includes(term) ||
+        sku.includes(term) ||
+        brand.includes(term) ||
         keywords.includes(term);
-      
+
       // 2. Category Match (Consistency with parent)
       if (!filterCatId) return searchMatch;
 
       const prodCat = String(p.category || p.categoryId || p.Category || "").toLowerCase();
       const prodCatName = String(p.categoryName || "").toLowerCase();
-      
-      const categoryMatch = 
-        prodCat === filterCatId.toLowerCase() || 
+
+      const categoryMatch =
+        prodCat === filterCatId.toLowerCase() ||
         (filterCatName && (prodCat === filterCatName || prodCatName === filterCatName));
 
       return searchMatch && categoryMatch;
@@ -83,11 +86,10 @@ const ProductList = ({
         <div className="flex items-center gap-3">
           <button
             onClick={() => setShowFilters(!showFilters)}
-            className={`p-3.5 border transition-all rounded-2xl shadow-sm active:scale-95 flex items-center gap-2 ${
-              showFilters || filterCategory 
-                ? 'bg-indigo-600 border-indigo-600 text-white' 
+            className={`p-3.5 border transition-all rounded-2xl shadow-sm active:scale-95 flex items-center gap-2 ${showFilters || filterCategory
+                ? 'bg-indigo-600 border-indigo-600 text-white'
                 : 'bg-white border-gray-100 text-gray-600 hover:bg-gray-50'
-            }`}
+              }`}
             title="Toggle filters"
           >
             <Filter size={20} />
@@ -125,7 +127,7 @@ const ProductList = ({
               <div className="flex items-center justify-between mb-4">
                 <h4 className="text-sm font-black text-gray-900 uppercase tracking-widest">Select Category</h4>
                 {filterCategory && (
-                  <button 
+                  <button
                     onClick={() => onCategoryFilterChange('')}
                     className="text-xs font-bold text-rose-500 hover:text-rose-600"
                   >
@@ -136,11 +138,10 @@ const ProductList = ({
               <div className="flex flex-wrap gap-2">
                 <button
                   onClick={() => onCategoryFilterChange('')}
-                  className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
-                    !filterCategory 
-                      ? 'bg-indigo-600 text-white shadow-md' 
+                  className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${!filterCategory
+                      ? 'bg-indigo-600 text-white shadow-md'
                       : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
-                  }`}
+                    }`}
                 >
                   All Categories
                 </button>
@@ -148,11 +149,10 @@ const ProductList = ({
                   <button
                     key={cat.id}
                     onClick={() => onCategoryFilterChange(cat.id)}
-                    className={`px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-2 ${
-                      filterCategory === cat.id 
-                        ? 'bg-indigo-600 text-white shadow-md' 
+                    className={`px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-2 ${filterCategory === cat.id
+                        ? 'bg-indigo-600 text-white shadow-md'
                         : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
-                    }`}
+                      }`}
                   >
                     {cat.name}
                     {filterCategory === cat.id && <Check size={12} />}
@@ -280,10 +280,10 @@ const ProductList = ({
 
                       <td className="px-6 py-5">
                         <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest ${product.stock > 10 ? 'bg-emerald-50 text-emerald-600' :
-                            product.stock > 0 ? 'bg-amber-50 text-amber-600' : 'bg-rose-50 text-rose-600'
+                          product.stock > 0 ? 'bg-amber-50 text-amber-600' : 'bg-rose-50 text-rose-600'
                           }`}>
                           <div className={`w-1.5 h-1.5 rounded-full ${product.stock > 10 ? 'bg-emerald-500' :
-                              product.stock > 0 ? 'bg-amber-500' : 'bg-rose-500'
+                            product.stock > 0 ? 'bg-amber-500' : 'bg-rose-500'
                             }`} />
                           {product.stock} Units
                         </div>
@@ -318,28 +318,42 @@ const ProductList = ({
                   ))}
                 </tbody>
               </table>
-              
-              {hasMore && (
-                <div className="p-8 border-t border-gray-50 flex justify-center bg-gray-50/30">
-                  <button
-                    onClick={onLoadMore}
-                    disabled={loadingMore}
-                    className="flex items-center gap-3 px-8 py-3.5 bg-white border border-gray-200 text-indigo-600 rounded-2xl font-black shadow-sm hover:border-indigo-200 hover:bg-indigo-50/50 transition-all active:scale-95 disabled:opacity-50"
-                  >
-                    {loadingMore ? (
-                      <>
-                        <RefreshCw size={18} className="animate-spin" />
-                        <span>Discovering More...</span>
-                      </>
-                    ) : (
-                      <>
-                        <span>Load More Products</span>
-                        <div className="px-2 py-0.5 bg-indigo-100 text-[10px] rounded-md">
-                          +50
-                        </div>
-                      </>
-                    )}
-                  </button>
+
+              {totalProducts > pageSize && (
+                <div className="p-8 border-t border-gray-50 flex justify-between items-center bg-gray-50/30">
+                  <div className="text-sm font-bold text-gray-500 uppercase tracking-widest">
+                    Page {currentPage} of {Math.ceil(totalProducts / pageSize)}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      disabled={currentPage === 1 || loading}
+                      onClick={() => onPageChange(currentPage - 1)}
+                      className="px-6 py-2.5 bg-white border border-gray-200 text-indigo-600 rounded-xl font-black shadow-sm disabled:opacity-50 hover:bg-indigo-50 transition-all"
+                    >
+                      Previous
+                    </button>
+                    <div className="flex items-center gap-1">
+                      {[...Array(Math.min(5, Math.ceil(totalProducts / pageSize)))].map((_, i) => {
+                        const page = i + 1;
+                        return (
+                          <button
+                            key={page}
+                            onClick={() => onPageChange(page)}
+                            className={`w-10 h-10 rounded-xl font-black transition-all ${currentPage === page ? 'bg-indigo-600 text-white' : 'bg-white text-gray-500 hover:bg-indigo-50'}`}
+                          >
+                            {page}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <button
+                      disabled={!hasMore || loading}
+                      onClick={() => onPageChange(currentPage + 1)}
+                      className="px-6 py-2.5 bg-white border border-gray-200 text-indigo-600 rounded-xl font-black shadow-sm disabled:opacity-50 hover:bg-indigo-50 transition-all"
+                    >
+                      Next
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -395,7 +409,7 @@ const ProductList = ({
 
                   <div className="flex items-center justify-between pt-4 border-t border-gray-50">
                     <div className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-lg ${product.stock > 10 ? 'bg-emerald-50 text-emerald-600' :
-                        product.stock > 0 ? 'bg-amber-50 text-amber-600' : 'bg-rose-50 text-rose-600'
+                      product.stock > 0 ? 'bg-amber-50 text-amber-600' : 'bg-rose-50 text-rose-600'
                       }`}>
                       {product.stock} Left
                     </div>
@@ -425,15 +439,27 @@ const ProductList = ({
             </div>
 
             {/* Mobile Load More */}
-            {hasMore && (
-              <div className="mt-8 flex justify-center lg:hidden">
-                <button
-                  onClick={onLoadMore}
-                  disabled={loadingMore}
-                  className="w-full flex items-center justify-center gap-3 px-8 py-4 bg-white border border-gray-100 text-indigo-600 rounded-3xl font-black shadow-sm"
-                >
-                  {loadingMore ? <RefreshCw size={20} className="animate-spin" /> : "Load More"}
-                </button>
+            {totalProducts > pageSize && (
+              <div className="mt-8 flex flex-col gap-4 lg:hidden">
+                <div className="text-center text-xs font-black text-gray-400 uppercase tracking-widest">
+                  Page {currentPage} of {Math.ceil(totalProducts / pageSize)}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    disabled={currentPage === 1 || loading}
+                    onClick={() => onPageChange(currentPage - 1)}
+                    className="flex-1 py-4 bg-white border border-gray-100 text-indigo-600 rounded-3xl font-black shadow-sm disabled:opacity-50"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    disabled={!hasMore || loading}
+                    onClick={() => onPageChange(currentPage + 1)}
+                    className="flex-1 py-4 bg-white border border-gray-100 text-indigo-600 rounded-3xl font-black shadow-sm disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
             )}
           </>

@@ -19,6 +19,7 @@ import {
   Sparkles,
   ChevronRight,
   Zap,
+  RotateCcw,
 } from 'lucide-react';
 
 const Sidebar = ({ isOpen, onClose }) => {
@@ -36,6 +37,7 @@ const Sidebar = ({ isOpen, onClose }) => {
     { path: '/posters', icon: Image, label: 'Posters' },
     { path: '/bulk-upload', icon: Upload, label: 'JSON Upload' },
     { path: '/python-automation', icon: Code, label: 'Python Automation' },
+    { path: '/returns', icon: RotateCcw, label: 'Returns & Refunds' },
     { path: '/profile', icon: User, label: 'Profile' },
   ];
 
