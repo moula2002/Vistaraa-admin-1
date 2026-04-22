@@ -236,9 +236,18 @@ const Returns = () => {
   const stats = useMemo(() => {
     return {
       total: returns.length,
-      pending: returns.filter(r => r.status === 'RETURN_REQUESTED').length,
-      approved: returns.filter(r => r.status === 'RETURN_APPROVED').length,
-      refunded: returns.filter(r => r.status === 'REFUNDED').length,
+      pending: returns.filter(r => {
+        const s = r.status?.toUpperCase() || '';
+        return s === 'PENDING' || s === 'RETURN_REQUESTED' || !s;
+      }).length,
+      approved: returns.filter(r => {
+        const s = r.status?.toUpperCase() || '';
+        return s === 'APPROVED' || s === 'RETURN_APPROVED';
+      }).length,
+      refunded: returns.filter(r => {
+        const s = r.status?.toUpperCase() || '';
+        return s === 'REFUNDED';
+      }).length,
     };
   }, [returns]);
 
@@ -366,9 +375,9 @@ const Returns = () => {
                     </td>
                     <td className="px-8 py-6">
                       <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                        ret.status === 'REFUNDED' ? 'bg-emerald-50 text-emerald-600' :
-                        ret.status === 'RETURN_APPROVED' ? 'bg-blue-50 text-blue-600' :
-                        ret.status === 'RETURN_REJECTED' ? 'bg-rose-50 text-rose-600' :
+                        ret.status?.toUpperCase() === 'REFUNDED' ? 'bg-emerald-50 text-emerald-600' :
+                        (ret.status?.toUpperCase() === 'RETURN_APPROVED' || ret.status?.toUpperCase() === 'APPROVED') ? 'bg-blue-50 text-blue-600' :
+                        ret.status?.toUpperCase() === 'RETURN_REJECTED' ? 'bg-rose-50 text-rose-600' :
                         'bg-amber-50 text-amber-600'
                       }`}>
                         {ret.status?.replace('_', ' ') || 'Pending Review'}
